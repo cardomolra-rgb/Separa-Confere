@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Separa &amp; Confere</title>
+<meta name="description" content="Separação e conferência de pedidos sem papel.">
+<meta name="theme-color" content="#16191D">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Separa">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap">
+<link rel="stylesheet" href="/app.css?v=1">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html,body{margin:0}body{font-size:15px;-webkit-tap-highlight-color:transparent}img{max-width:100%}</style>
+</head>
+<body>
+<header class="top"><div class="in">
+  <div class="brand"><i>S&amp;C</i> Separa &amp; Confere</div>
+  <button class="opbtn" id="opBtn" aria-haspopup="dialog" aria-label="Menu do usuário" hidden></button>
+</div></header>
+<main class="wrap"><div class="net" id="net" hidden>Sem conexão. O que você fizer fica guardado neste aparelho e é enviado quando a internet voltar.</div><div id="app"></div></main>
+<div class="footer" id="footer" hidden><div class="in" id="footerIn"></div></div>
+<div class="toast" id="toast" hidden></div>
+<div class="sheet-bg" id="opSheet" hidden><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="opTit">
+  <div class="grip"></div><div class="lbl" id="opTit">Conectado como</div>
+  <div class="oplist" id="opList"></div>
+  <div style="display:grid;gap:8px"><button class="btn ghost" id="opEdit">Operadores e PINs</button><button class="btn" id="opSair">Sair / trocar usuário</button></div>
+</div></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js" crossorigin="anonymous"></script>
+<script src="/app.js?v=1"></script>
+</body>
+</html>
