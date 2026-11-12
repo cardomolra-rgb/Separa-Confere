@@ -76,7 +76,7 @@ begin
   perform pg_advisory_xact_lock(hashtext('sc_setup'));
   if exists(select 1 from sc_operadores) then raise exception 'ja_configurado'; end if;
   if coalesce(trim(p_nome),'') = '' then raise exception 'nome_obrigatorio'; end if;
-  if p_pin !~ '^\d{4,6}$' then raise exception 'pin_invalido'; end if;
+  if p_pin !~ '^\d{4}$' then raise exception 'pin_invalido'; end if;
   insert into sc_operadores(nome, papel, pin_hash) values (trim(p_nome), 'gerente', crypt(p_pin, gen_salt('bf')))
   returning * into o;
   insert into sc_sessoes(operador_id) values (o.id) returning token into t;
@@ -195,7 +195,7 @@ begin
   o := sc__operador(p_token);
   if o.papel <> 'gerente' then raise exception 'sem_permissao:gerente'; end if;
   if coalesce(trim(p_nome),'') = '' then raise exception 'nome_obrigatorio'; end if;
-  if p_pin is not null and p_pin <> '' and p_pin !~ '^\d{4,6}$' then raise exception 'pin_invalido'; end if;
+  if p_pin is not null and p_pin <> '' and p_pin !~ '^\d{4}$' then raise exception 'pin_invalido'; end if;
   if p_id is null then
     if coalesce(p_pin,'') = '' then raise exception 'pin_obrigatorio'; end if;
     insert into sc_operadores(nome, papel, pin_hash, ativo) values (trim(p_nome), p_papel, crypt(p_pin, gen_salt('bf')), coalesce(p_ativo, true)) returning * into r;
@@ -210,6 +210,18 @@ begin
   end if;
   return jsonb_build_object('id', r.id, 'nome', r.nome, 'papel', r.papel, 'ativo', r.ativo);
 exception when unique_violation then raise exception 'nome_repetido';
+end $$;
+
+-- gerente exclui operador (não pode excluir a si mesmo)
+create or replace function public.sc_operador_excluir(p_token uuid, p_id uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare o public.sc_operadores;
+begin
+  o := sc__operador(p_token);
+  if o.papel <> 'gerente' then raise exception 'sem_permissao:gerente'; end if;
+  if p_id = o.id then raise exception 'nao_pode_excluir_a_si'; end if;
+  delete from sc_operadores where id = p_id;
+  if not found then raise exception 'operador_nao_encontrado'; end if;
 end $$;
 
 -- aviso em tempo real para os aparelhos (só o id, sem dados)
@@ -228,5 +240,5 @@ revoke execute on function public.sc__operador(uuid), public.sc__op_json(public.
 grant execute on function
   public.sc_inicio(), public.sc_criar_primeiro_gerente(text,text), public.sc_entrar(uuid,text), public.sc_eu(uuid), public.sc_sair(uuid),
   public.sc_listar_pedidos(uuid), public.sc_criar_pedido(uuid,jsonb), public.sc_salvar_pedido(uuid,bigint,int,jsonb), public.sc_excluir_pedido(uuid,bigint),
-  public.sc_operadores_listar(uuid), public.sc_operador_salvar(uuid,uuid,text,text,text,boolean)
+  public.sc_operadores_listar(uuid), public.sc_operador_salvar(uuid,uuid,text,text,text,boolean), public.sc_operador_excluir(uuid,uuid)
 to anon, authenticated;

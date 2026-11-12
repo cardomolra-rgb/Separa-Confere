@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <g stroke-linejoin="round" stroke-width="10">
+    <!-- Face superior (laranja, com recorte central) -->
+    <path transform="translate(0,-8)" fill="#F47B20" stroke="#F47B20" fill-rule="evenodd"
+          d="M256 60 L425 158 L256 256 L87 158 Z
+             M256 124 L311 156 L256 188 L201 156 Z"/>
+    <!-- Face esquerda (escura) -->
+    <path transform="translate(-7,4)" fill="#2B2B2B" stroke="#2B2B2B"
+          d="M87 162 L252 258 L252 450 L87 354 Z"/>
+    <!-- Face direita (laranja) -->
+    <path transform="translate(7,4)" fill="#F47B20" stroke="#F47B20"
+          d="M425 162 L260 258 L260 450 L425 354 Z"/>
+  </g>
+</svg>

@@ -3,7 +3,8 @@ const SUPA_URL="https://mdcymhgqzvdrojasuxhb.supabase.co";
 const SUPA_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kY3ltaGdxenZkcm9qYXN1eGhiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA1ODE1MTUsImV4cCI6MjA4NjE1NzUxNX0.r-f-G-PTnphI-H8zKWgXS5-UK1ftpJddLCv8kQ_Tf1M";
 const sb=supabase.createClient(SUPA_URL,SUPA_KEY,{auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false}});
 
-const STATUS={aguardando:"Aguardando separação",separando:"Em separação",conferir:"Aguardando conferência",divergente:"Com divergência",concluido:"Pronto p/ expedição"};
+const STATUS={aguardando:"Separar",separando:"Separando",conferir:"A conferir",divergente:"Divergência",concluido:"Pronto"};
+const UNIDADES=["UN","M","PÇ","RL","CX","KG","BR","JG","KIT","PAR","LT","CJ"];
 const PAPEL={separacao:"Separação",conferencia:"Conferência",gerente:"Gerente"};
 const LS={
   get(k,d){try{const v=localStorage.getItem("sc_"+k);return v==null?d:JSON.parse(v)}catch(e){return d}},
@@ -34,7 +35,8 @@ const ERROS={
   "sem_permissao:separacao":"Esta etapa é da separação. Entre com um usuário da separação ou gerente.",
   "sem_permissao:conferencia":"Esta etapa é da conferência. Entre com um usuário da conferência ou gerente.",
   "sem_permissao:gerente":"Só o gerente pode fazer isso.",
-  "pin_invalido":"O PIN precisa ter de 4 a 6 números.",
+  "pin_invalido":"O PIN precisa ter 4 números.",
+  "nao_pode_excluir_a_si":"Você não pode excluir o seu próprio usuário.",
   "pin_obrigatorio":"Informe um PIN para o novo operador.",
   "nome_obrigatorio":"Informe o nome.",
   "nome_repetido":"Já existe um operador com esse nome.",
@@ -92,7 +94,7 @@ async function recarregar(forcar){
 }
 let pendRender=false;
 function rerender(forcar){
-  if(["carregando","login","setup","nova","operadores"].includes(view.tela))return;
+  if(["carregando","login","setup","nova","editar","operadores"].includes(view.tela))return;
   const a=document.activeElement;
   if(!forcar&&a&&$("#app").contains(a)&&/INPUT|TEXTAREA|SELECT/.test(a.tagName)){pendRender=true;return}
   pendRender=false;
@@ -131,7 +133,8 @@ async function iniciar(){
   }
   carregarInicio();
 }
-function entrarApp(){fillOps();$("#opBtn").hidden=false;go("lista",null);recarregar(true);ligarTempoReal()}
+function entrarApp(){fillOps();$("#opBtn").hidden=false;go("lista",null);recarregar(true);ligarTempoReal();atualizarOps()}
+function atualizarOps(){return rpc("sc_inicio").then(r=>{S.operadores=r.operadores}).catch(()=>{})}
 function logado(r){S.token=r.token;S.eu=r.operador;S.op=r.operador.nome;LS.set("token",S.token);LS.set("eu",S.eu);toast(`Olá, ${S.eu.nome}`);entrarApp()}
 async function sair(){
   $("#toast").hidden=true;
@@ -155,9 +158,32 @@ document.addEventListener("keydown",e=>{if(e.key==="Escape")opSheet.hidden=true}
 $("#opEdit").onclick=()=>{opSheet.hidden=true;go("operadores",view.id)};
 $("#opSair").onclick=()=>sair();
 
+/* confirmação na própria página */
+function confirmar({titulo,texto,ok,perigo}){
+  return new Promise(res=>{
+    const sh=$("#cfSheet");$("#cfTit").textContent=titulo;$("#cfTxt").textContent=texto||"";
+    const b=$("#cfSim");b.textContent=ok||"Confirmar";b.className="btn "+(perigo?"bad":"tag");
+    const fim=v=>{sh.hidden=true;sh.onclick=null;res(v)};
+    b.onclick=()=>fim(true);$("#cfNao").onclick=()=>fim(false);sh.onclick=e=>{if(e.target===sh)fim(false)};
+    sh.hidden=false;b.focus();
+  });
+}
+async function excluirPedido(p){
+  if(!await confirmar({titulo:`Excluir o pedido ${p.id}?`,texto:`${p.cliente}. Os materiais, as contagens e o histórico serão apagados para todos. Não dá para desfazer.`,ok:"Excluir pedido",perigo:true}))return false;
+  try{await rpc("sc_excluir_pedido",{p_token:S.token,p_id:+p.id});sujos.delete(p.id);S.pedidos=S.pedidos.filter(x=>x.id!==p.id);LS.set("cache",S.pedidos);toast(`Pedido ${p.id} excluído`);return true}
+  catch(err){toast(msgErro(err));return false}
+}
+async function resetarPedido(p){
+  if(!await confirmar({titulo:`Resetar o pedido ${p.id}?`,texto:"Ele volta para Separar e todas as quantidades separadas e conferidas são zeradas. O histórico é mantido.",ok:"Resetar pedido"}))return false;
+  p.status="aguardando";p.itens.forEach(i=>{i.sep=0;i.conf=0;i.falta=false});delete p.separador;delete p.conferente;p.volumes=0;p.obs="";
+  log(p,`${S.op} resetou o pedido (voltou para Separar)`);await salvarAgora(p);toast(`Pedido ${p.id} resetado`);return true;
+}
+
 /* exclusão (gerente) */
 $("#app").addEventListener("click",async e=>{
   const p=ped();if(!p)return;const id=e.target.id;
+  if(id==="hEditar")return go("editar",p.id);
+  if(id==="hReset"){if(await resetarPedido(p)){view.cur=null;render()}return}
   if(id==="excluir"){view.del=true;render();$("#delBox")?.scrollIntoView({block:"center"})}
   if(id==="delNao"){view.del=false;render()}
   if(id==="delSim"){
@@ -167,7 +193,7 @@ $("#app").addEventListener("click",async e=>{
   }
 });
 
-function go(tela,id){view={tela,id:id===undefined?view.id:id,sel:0,msg:null,del:false,cur:null,edit:false,loginOp:null};render();scrollTo(0,0)}
+function go(tela,id){view={tela,id:id===undefined?view.id:id,sel:0,msg:null,del:false,cur:null,edit:false,loginOp:null,form:null,mEdit:null};render();scrollTo(0,0)}
 function render(){
   $("#footer").hidden=true;
   const n=$("#net");if(n)n.hidden=S.online||!S.token;
@@ -178,9 +204,10 @@ function render(){
   if(t==="login")return renderLogin();
   if(!S.eu)return;
   if(t==="lista")return renderLista();
-  if(t==="nova")return renderNova();
+  if(t==="nova")return renderForm("nova");
   if(t==="operadores")return renderOperadores();
   const p=ped();if(!p)return go("lista",null);
+  if(t==="editar")return renderForm("editar");
   const fase=["aguardando","separando"].includes(p.status)?"separar":["conferir","divergente"].includes(p.status)?"conferir":"detalhe";
   if((t==="separar"||t==="conferir"||t==="detalhe")&&t!==fase){view.tela=fase;view.cur=null;view.edit=false}
   if(view.tela==="separar")return renderSeparar();
@@ -201,15 +228,15 @@ function renderSetup(){
     <p class="hint">Crie o usuário do gerente. Depois, no menu do seu nome, você cadastra o pessoal da separação e da conferência, cada um com seu PIN.</p>
     <div class="panel" style="margin:0">
       <div class="field"><label class="lbl" for="gNome">Nome do gerente</label><input id="gNome" autocomplete="name" placeholder="Seu nome"></div>
-      <div class="field"><label class="lbl" for="gPin">PIN (4 a 6 números)</label><input id="gPin" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password"></div>
-      <div class="field"><label class="lbl" for="gPin2">Repita o PIN</label><input id="gPin2" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password"></div>
+      <div class="field"><label class="lbl" for="gPin">PIN (4 números)</label><input id="gPin" type="password" inputmode="numeric" maxlength="4" autocomplete="new-password"></div>
+      <div class="field"><label class="lbl" for="gPin2">Repita o PIN</label><input id="gPin2" type="password" inputmode="numeric" maxlength="4" autocomplete="new-password"></div>
       <div class="pinerr" id="gErr"></div>
       <button class="btn tag" id="gCriar" style="width:100%">Criar gerente e entrar</button>
     </div></div>`;
   $("#gCriar").onclick=async()=>{
     const nome=$("#gNome").value.trim(),pin=$("#gPin").value,pin2=$("#gPin2").value,er=$("#gErr");
     if(!nome)return er.textContent="Informe o nome.";
-    if(!/^\d{4,6}$/.test(pin))return er.textContent="O PIN precisa ter de 4 a 6 números.";
+    if(!/^\d{4}$/.test(pin))return er.textContent="O PIN precisa ter 4 números.";
     if(pin!==pin2)return er.textContent="Os dois PINs estão diferentes.";
     $("#gCriar").disabled=true;
     try{logado(await rpc("sc_criar_primeiro_gerente",{p_nome:nome,p_pin:pin}))}catch(e){er.textContent=msgErro(e);$("#gCriar").disabled=false}
@@ -225,7 +252,7 @@ function renderLogin(){
     document.querySelectorAll("[data-op]").forEach(b=>b.onclick=()=>{view.loginOp=b.dataset.op;pin="";render()});
     return;
   }
-  const dots=Array.from({length:6},(_,k)=>`<i class="${k<pin.length?"on":k>=4?"opt":""}"></i>`).join("");
+  const dots=Array.from({length:4},(_,k)=>`<i class="${k<pin.length?"on":""}"></i>`).join("");
   $("#app").innerHTML=`<div class="gate">
     <button class="back" id="trocar" style="padding:0">← Trocar pessoa</button>
     <div class="pinwho"><span class="av">${esc(ini(o.nome))}</span><div><h1 style="font-size:28px">${esc(o.nome)}</h1><div class="hint" style="margin:0">${PAPEL[o.papel]}</div></div></div>
@@ -237,12 +264,14 @@ function renderLogin(){
   document.querySelectorAll("[data-d]").forEach(b=>b.onclick=()=>teclaPin(b.dataset.d));
   $("#pinOk").onclick=entrarPin;
 }
-function teclaPin(d){if(d==="del")pin=pin.slice(0,-1);else if(pin.length<6)pin+=d;view.pinErr="";render()}
+function teclaPin(d){if(entrando)return;if(d==="del")pin=pin.slice(0,-1);else if(pin.length<4)pin+=d;view.pinErr="";render();if(pin.length===4)entrarPin()}
+let entrando=false;
 document.addEventListener("keydown",e=>{
   if(view.tela!=="login"||!view.loginOp)return;
-  if(/^\d$/.test(e.key))teclaPin(e.key);else if(e.key==="Backspace")teclaPin("del");else if(e.key==="Enter"&&pin.length>=4)entrarPin();
+  if(/^\d$/.test(e.key))teclaPin(e.key);else if(e.key==="Backspace")teclaPin("del");else if(e.key==="Enter")entrarPin();
 });
 async function entrarPin(){
+  if(entrando||pin.length<4)return;entrando=true;
   const b=$("#pinOk");if(b)b.disabled=true;
   try{
     const r=await rpc("sc_entrar",{p_operador:view.loginOp,p_pin:pin});
@@ -251,6 +280,7 @@ async function entrarPin(){
     if(r.erro==="bloqueado"){view.pinErr=`Muitas tentativas. Tente de novo em ${r.minutos} min.`;return render()}
     view.pinErr="";logado(r);
   }catch(e){pin="";view.pinErr=msgErro(e);render()}
+  finally{entrando=false}
 }
 
 /* ---------------- operadores (gerente) ---------------- */
@@ -271,13 +301,14 @@ async function renderOperadores(){
     <div class="field"><label class="lbl" for="oNome">Nome</label><input id="oNome" value="${esc(e.nome||"")}" placeholder="Nome e sobrenome"></div>
     <div class="field"><span class="lbl">Função</span><div class="seg" role="group" aria-label="Função">${Object.entries(PAPEL).map(([k,v])=>`<button data-pp="${k}" aria-pressed="${e.papel===k}">${v}</button>`).join("")}</div>
       <p class="hint">Separação separa os pedidos. Conferência confere e aprova. Gerente faz tudo, exclui pedidos e cadastra pessoas.</p></div>
-    <div class="field"><label class="lbl" for="oPin">${e.id?"Novo PIN (deixe em branco para manter)":"PIN (4 a 6 números)"}</label><input id="oPin" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password"></div>
+    <div class="field"><label class="lbl" for="oPin">${e.id?"Novo PIN de 4 números (deixe em branco para manter)":"PIN (4 números)"}</label><input id="oPin" type="password" inputmode="numeric" maxlength="4" autocomplete="new-password"></div>
     ${e.id?`<label class="check" for="oAtivo"><input type="checkbox" id="oAtivo" ${e.ativo!==false?"checked":""}> Ativo (desmarque para bloquear o acesso)</label>`:""}
     <div class="pinerr" id="oErr" style="text-align:left"></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn ghost" id="oCancel">Cancelar</button><button class="btn tag" id="oSalvar" style="flex:1">Salvar</button></div>
+    ${e.id&&e.id!==S.eu.id?`<button class="linkbtn" id="oExcluir" style="margin-top:14px">Excluir este operador</button>`:""}
   </div>`:""}
   <div class="panel">
-    ${opsLista.map(o=>`<button class="oprow2" data-ed="${o.id}"><span class="av ${o.ativo?"":"off"}">${esc(ini(o.nome))}</span><span class="t"><b>${esc(o.nome)}${o.id===S.eu.id?" (você)":""}</b><span>${PAPEL[o.papel]}${o.ativo?"":" · inativo"}</span></span><span class="ed" style="color:var(--info);font-weight:600;font-size:13px">Editar</span></button>`).join("")}
+    ${opsLista.map(o=>`<button class="oprow2" data-ed="${o.id}"><span class="av ${o.ativo?"":"off"}">${esc(ini(o.nome))}</span><span class="t"><b>${esc(o.nome)}${o.id===S.eu.id?" (você)":""}</b><span>${PAPEL[o.papel]}${o.ativo?"":" · inativo"}</span></span><span class="ed" style="color:var(--accent-ink);font-weight:600;font-size:13px">Editar</span></button>`).join("")}
   </div>`;
   footer(`<button class="btn tag" id="oNovo">+ Novo operador</button>`);
   $("#voltar").onclick=()=>{opsLista=null;opEdit=null;go(view.id?"separar":"lista")};
@@ -286,16 +317,20 @@ async function renderOperadores(){
   if(!e)return;
   document.querySelectorAll("[data-pp]").forEach(b=>b.onclick=()=>{e.nome=$("#oNome").value;e.papel=b.dataset.pp;render()});
   $("#oCancel").onclick=()=>{opEdit=null;render()};
+  const ox=$("#oExcluir");if(ox)ox.onclick=async()=>{
+    if(!await confirmar({titulo:`Excluir ${e.nome}?`,texto:"A pessoa perde o acesso na hora e some da tela de entrada. O nome continua no histórico dos pedidos que ela já mexeu.",ok:"Excluir operador",perigo:true}))return;
+    try{await rpc("sc_operador_excluir",{p_token:S.token,p_id:e.id});toast(`${e.nome} excluído`);opEdit=null;opsLista=null;S.operadores=S.operadores.filter(o=>o.id!==e.id);render()}catch(err){toast(msgErro(err))}
+  };
   $("#oSalvar").onclick=async()=>{
     const nome=$("#oNome").value.trim(),p=$("#oPin").value,at=$("#oAtivo")?$("#oAtivo").checked:true,er=$("#oErr");
     if(!nome)return er.textContent="Informe o nome.";
-    if(p&&!/^\d{4,6}$/.test(p))return er.textContent="O PIN precisa ter de 4 a 6 números.";
+    if(p&&!/^\d{4}$/.test(p))return er.textContent="O PIN precisa ter 4 números.";
     if(!e.id&&!p)return er.textContent="Informe um PIN para o novo operador.";
     $("#oSalvar").disabled=true;
     try{
       await rpc("sc_operador_salvar",{p_token:S.token,p_id:e.id||null,p_nome:nome,p_papel:e.papel,p_pin:p||null,p_ativo:at});
       if(e.id===S.eu.id){S.eu.nome=nome;S.op=nome;LS.set("eu",S.eu);fillOps()}
-      toast(e.id?"Operador atualizado":`${nome} cadastrado`);opEdit=null;opsLista=null;render();
+      toast(e.id?"Operador atualizado":`${nome} cadastrado`);opEdit=null;opsLista=null;atualizarOps();render();
     }catch(err){er.textContent=msgErro(err);$("#oSalvar").disabled=false}
   };
 }
@@ -313,50 +348,92 @@ function parseLista(txt){
     return {qtd:0,un:"un",desc:l,loc,erro:true};
   });
 }
-let rascunho=LS.get("rascunho",{cliente:"",cidade:"",entrega:"",urgente:false,texto:""});
-function renderNova(){
-  const r=rascunho,guarda=()=>LS.set("rascunho",r);
-  $("#app").innerHTML=`<button class="back" id="voltar">← Pedidos</button>
-  <h1>Nova lista para separar</h1>
+let rascunho=LS.get("rascunho2",{cliente:"",cidade:"",entrega:"",urgente:false,responsavel:"",itens:[]});
+const novoRascunho=()=>({cliente:"",cidade:"",entrega:"",urgente:false,responsavel:"",itens:[]});
+function renderForm(modo){
+  const ed=modo==="editar",p=ed?ped():null;
+  if(ed&&!view.form)view.form={cliente:p.cliente,cidade:p.cidade==="—"?"":p.cidade,entrega:p.entrega==="a combinar"?"":p.entrega,urgente:!!p.urgente,responsavel:p.responsavel||"",itens:JSON.parse(JSON.stringify(p.itens))};
+  const r=ed?view.form:rascunho,guarda=()=>{if(!ed)LS.set("rascunho2",r)};
+  const seps=S.operadores.filter(o=>o.papel!=="conferencia").map(o=>o.nome);
+  if(r.responsavel&&!seps.includes(r.responsavel))seps.unshift(r.responsavel);
+  const me=view.mEdit!=null?r.itens[view.mEdit]:null;
+  const unSel=u=>{const U=String(u||"UN").toUpperCase();const l=UNIDADES.includes(U)?UNIDADES:[U,...UNIDADES];return l.map(x=>`<option${x===U?" selected":""}>${esc(x)}</option>`).join("")};
+  $("#app").innerHTML=`<button class="back" id="voltar">← ${ed?"Voltar":"Pedidos"}</button>
+  <h1>${ed?`Editar pedido ${p.id}`:"Nova separação"}</h1>
   <div class="panel">
-    <div class="field"><label class="lbl" for="nCli">Cliente</label><input id="nCli" value="${esc(r.cliente)}" placeholder="Nome do cliente ou obra"></div>
+    <div class="field"><label class="lbl" for="nCli">Obra / Pedido</label><input id="nCli" value="${esc(r.cliente)}" placeholder="Ex.: Fazenda São João"></div>
     <div class="grid2">
-      <div class="field"><label class="lbl" for="nCid">Cidade</label><input id="nCid" value="${esc(r.cidade)}" placeholder="Palmas-TO"></div>
-      <div class="field"><label class="lbl" for="nEnt">Entrega</label><input id="nEnt" value="${esc(r.entrega)}" placeholder="Hoje 17h"></div>
+      <div class="field"><label class="lbl" for="nCid">Cidade</label><input id="nCid" value="${esc(r.cidade)}" placeholder="Ex.: Palmas-TO"></div>
+      <div class="field"><label class="lbl" for="nEnt">Entrega</label><input id="nEnt" value="${esc(r.entrega)}" placeholder="Ex.: Hoje 17h"></div>
     </div>
+    <div class="field"><label class="lbl" for="nResp">Responsável</label><select id="nResp"><option value="">Qualquer separador</option>${seps.map(n=>`<option${n===r.responsavel?" selected":""}>${esc(n)}</option>`).join("")}</select></div>
     <label class="check" for="nUrg"><input type="checkbox" id="nUrg" ${r.urgente?"checked":""}> Urgente</label>
   </div>
   <div class="panel">
-    <div class="field"><label class="lbl" for="nTxt">Itens · um por linha</label>
-    <textarea id="nTxt" class="paste" placeholder="300 m Cabo alumínio 2 AWG @C-01-1&#10;24 pç Isolador pino 15 kV&#10;Cruzeta concreto 2.000 mm - 6">${esc(r.texto)}</textarea></div>
-    <p class="hint">Cole direto do WhatsApp, e-mail ou planilha. Aceita "300 m Cabo…" ou "Cabo… - 300". Para indicar o endereço no estoque, termine a linha com @A-03-2.</p>
-  </div>
-  <div class="panel"><h2 id="pvT"></h2><div style="overflow-x:auto"><table class="prev" id="pv"></table></div></div>`;
-  const pv=()=>{
-    const it=parseLista(r.texto),errs=it.filter(i=>i.erro).length;
-    $("#pvT").textContent=`Conferência da leitura · ${it.length} itens`;
-    $("#pv").innerHTML=it.length?it.map(i=>`<tr class="${i.erro?"err":""}"><td class="n">${i.erro?"?":fmt(i.qtd)} ${i.erro?"":i.un}</td><td>${esc(i.desc)}${i.erro?" <small>· sem quantidade, corrija a linha</small>":""}</td><td class="mono">${esc(i.loc)}</td></tr>`).join(""):`<tr><td class="empty">Cole ou digite os itens acima.</td></tr>`;
-    const b=$("#criar");if(b){b.disabled=!it.length||errs>0||!r.cliente.trim();b.textContent=errs?`Corrija ${errs} linha${errs>1?"s":""}`:!r.cliente.trim()?"Informe o cliente":it.length?`Criar pedido com ${it.length} itens`:"Adicione os itens"}
-  };
-  footer(`<button class="btn tag" id="criar">Criar pedido</button>`);
-  $("#voltar").onclick=()=>go("lista");
-  $("#nCli").oninput=e=>{r.cliente=e.target.value;guarda();pv()};
+    <div class="mhead" style="margin-top:0"><h2>Materiais do pedido</h2><span>${r.itens.length} ${r.itens.length===1?"material":"materiais"}</span></div>
+    <div class="mat-add" style="margin-top:12px">
+      <div class="field desc-f"><label class="lbl" for="mDesc">Descrição do material</label><input id="mDesc" value="${esc(me?.desc||"")}" placeholder="Ex.: Cabo 35 mm²" autocomplete="off"></div>
+      <div class="field"><label class="lbl" for="mUn">Unidade</label><select id="mUn">${unSel(me?.un||LS.get("ultUn","UN"))}</select></div>
+      <div class="field"><label class="lbl" for="mQtd">Qtd.</label><input id="mQtd" type="number" min="0" step="any" inputmode="decimal" value="${me?me.qtd:""}" placeholder="0"></div>
+      <div class="field loc-f"><label class="lbl" for="mLoc">Endereço no estoque (opcional)</label><input id="mLoc" value="${esc(me?.loc||"")}" placeholder="Ex.: A-03-2" autocomplete="off"></div>
+    </div>
+    <div class="pinerr" id="mErr" style="text-align:left;min-height:0"></div>
+    <button class="btn tag addbtn" id="mAdd">${me?"Salvar material":"+ Adicionar material"}</button>
+    ${me?`<button class="btn ghost" id="mCancel" style="width:100%;margin-top:8px">Cancelar edição</button>`:""}
+    ${r.itens.length?`<div class="mlist">${r.itens.map((i,ix)=>`<div class="mrow"><span class="q">${fmt(i.qtd)} ${esc(i.un)}</span><span class="d">${esc(i.desc)}${i.loc?`<small>${esc(i.loc)}</small>`:""}${ed&&(i.sep||i.conf)?`<small>separado ${fmt(i.sep)} · conferido ${fmt(i.conf)}</small>`:""}</span><button data-me="${ix}">Editar</button><button class="x" data-mx="${ix}" aria-label="Remover ${esc(i.desc)}">×</button></div>`).join("")}</div>`:`<p class="hint" style="margin-top:12px">Nenhum material ainda. Preencha acima e toque em “Adicionar material”.</p>`}
+    <details class="colar"><summary>Colar uma lista do WhatsApp ou planilha</summary>
+      <div class="field"><textarea id="nTxt" placeholder="300 m Cabo alumínio 2 AWG @C-01-1&#10;24 pç Isolador pino 15 kV&#10;Cruzeta concreto 2.000 mm - 6"></textarea></div>
+      <p class="hint">Um material por linha. Aceita "300 m Cabo…" ou "Cabo… - 300". Para o endereço, termine a linha com @A-03-2.</p>
+      <div class="pinerr" id="cErr" style="text-align:left;min-height:0"></div>
+      <button class="btn ghost" id="nColar" style="width:100%;margin-top:6px">Adicionar materiais da lista</button>
+    </details>
+  </div>`;
+  const pronto=()=>{const b=$("#criar");if(!b)return;b.disabled=!r.itens.length||!r.cliente.trim();b.textContent=!r.cliente.trim()?"Informe a obra / pedido":!r.itens.length?"Adicione os materiais":ed?"Salvar alterações":`Criar pedido com ${r.itens.length} ${r.itens.length===1?"material":"materiais"}`};
+  footer(`<button class="btn tag" id="criar">Criar pedido</button>`);pronto();
+  $("#voltar").onclick=()=>ed?abrir(p.id):go("lista");
+  $("#nCli").oninput=e=>{r.cliente=e.target.value;guarda();pronto()};
   $("#nCid").oninput=e=>{r.cidade=e.target.value;guarda()};
   $("#nEnt").oninput=e=>{r.entrega=e.target.value;guarda()};
+  $("#nResp").onchange=e=>{r.responsavel=e.target.value;guarda()};
   $("#nUrg").onchange=e=>{r.urgente=e.target.checked;guarda()};
-  $("#nTxt").oninput=e=>{r.texto=e.target.value;guarda();pv()};
-  pv();
+  const addMat=()=>{
+    const desc=$("#mDesc").value.trim(),qtd=+String($("#mQtd").value).replace(",","."),un=$("#mUn").value,loc=$("#mLoc").value.trim().toUpperCase(),er=$("#mErr");
+    if(!desc){er.textContent="Escreva a descrição do material.";return $("#mDesc").focus()}
+    if(!(qtd>0)){er.textContent="Informe a quantidade.";return $("#mQtd").focus()}
+    LS.set("ultUn",un);
+    if(me)Object.assign(me,{desc,qtd,un,loc});else r.itens.push({desc,qtd,un,loc,sep:0,conf:0,falta:false});
+    view.mEdit=null;guarda();render();$("#mDesc").focus();
+  };
+  $("#mAdd").onclick=addMat;
+  ["mDesc","mQtd","mLoc"].forEach(id=>$("#"+id).onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();addMat()}});
+  const mc=$("#mCancel");if(mc)mc.onclick=()=>{view.mEdit=null;render()};
+  document.querySelectorAll("[data-me]").forEach(b=>b.onclick=()=>{view.mEdit=+b.dataset.me;render();$("#mDesc").scrollIntoView({block:"center"});$("#mDesc").focus()});
+  document.querySelectorAll("[data-mx]").forEach(b=>b.onclick=()=>{const ix=+b.dataset.mx;if(view.mEdit===ix)view.mEdit=null;r.itens.splice(ix,1);guarda();render()});
+  $("#nColar").onclick=()=>{
+    const it=parseLista($("#nTxt").value),errs=it.filter(i=>i.erro);
+    if(!it.length){$("#cErr").textContent="Cole pelo menos uma linha.";return}
+    if(errs.length){$("#cErr").textContent=`Sem quantidade: ${errs.map(i=>i.desc).slice(0,3).join("; ")}${errs.length>3?"…":""}. Corrija e tente de novo.`;return}
+    it.forEach(i=>r.itens.push({desc:i.desc,qtd:i.qtd,un:i.un.toUpperCase(),loc:i.loc,sep:0,conf:0,falta:false}));
+    guarda();toast(`${it.length} ${it.length===1?"material adicionado":"materiais adicionados"}`);render();
+  };
   $("#criar").onclick=async()=>{
-    const b=$("#criar");b.disabled=true;b.textContent="Criando…";
-    const itens=parseLista(r.texto).map((i,n)=>({ref:String(n+1).padStart(2,"0"),desc:i.desc,un:i.un,qtd:i.qtd,loc:i.loc,sep:0,conf:0,falta:false}));
-    const doc={cliente:r.cliente.trim(),cidade:r.cidade.trim()||"—",entrega:r.entrega.trim()||"a combinar",urgente:r.urgente,volumes:0,obs:"",log:[],itens};
-    log(doc,`${S.op} criou a lista com ${itens.length} itens`);
+    const b=$("#criar");b.disabled=true;b.textContent=ed?"Salvando…":"Criando…";
+    const cab={cliente:r.cliente.trim(),cidade:r.cidade.trim()||"—",entrega:r.entrega.trim()||"a combinar",urgente:r.urgente,responsavel:r.responsavel||""};
+    if(ed){
+      let n=Math.max(0,...r.itens.map(i=>+i.ref||0));
+      r.itens.forEach(i=>{if(!i.ref)i.ref=String(++n).padStart(2,"0")});
+      Object.assign(p,cab);p.itens=r.itens;log(p,`${S.op} editou o pedido (${r.itens.length} materiais)`);
+      await salvarAgora(p);toast(`Pedido ${p.id} atualizado`);return abrir(p.id);
+    }
+    const itens=r.itens.map((i,n)=>({...i,ref:String(n+1).padStart(2,"0")}));
+    const doc={...cab,volumes:0,obs:"",log:[],itens};
+    log(doc,`${S.op} criou a lista com ${itens.length} materiais`);
     try{
-      const p=await rpc("sc_criar_pedido",{p_token:S.token,p_doc:doc});
-      substituir(p);LS.set("cache",S.pedidos);
-      rascunho={cliente:"",cidade:"",entrega:"",urgente:false,texto:""};LS.del("rascunho");
-      toast(`Pedido ${p.id} criado`);podeSep()?go("separar",p.id):go("lista",null);
-    }catch(e){toast(msgErro(e));pv()}
+      const np=await rpc("sc_criar_pedido",{p_token:S.token,p_doc:doc});
+      substituir(np);LS.set("cache",S.pedidos);
+      rascunho=novoRascunho();LS.del("rascunho2");
+      toast(`Pedido ${np.id} criado`);podeSep()?go("separar",np.id):go("lista",null);
+    }catch(e){toast(msgErro(e));pronto()}
   };
 }
 
@@ -405,25 +482,55 @@ function renderLista(){
   lista.sort((a,b)=>(b.urgente?1:0)-(a.urgente?1:0)||String(a.criado).localeCompare(String(b.criado)));
   $("#app").innerHTML=`
   <div class="flow">
-    <div><b>${c("aguardando")}</b><span>A separar</span></div>
-    <div><b>${c("separando")}</b><span>Separando</span></div>
-    <div><b>${c("conferir")+c("divergente")}</b><span>A conferir</span></div>
-    <div><b>${c("concluido")}</b><span>Prontos</span></div>
+    <div class="f1"><b>${c("aguardando")}</b><span>Separar</span></div>
+    <div class="f2"><b>${c("separando")}</b><span>Separando</span></div>
+    <div class="f3"><b>${c("conferir")+c("divergente")}</b><span>A conferir</span></div>
+    <div class="f4"><b>${c("concluido")}</b><span>Pronto</span></div>
   </div>
   <div class="tabs" role="group" aria-label="Filtro">${Object.entries(filtros).map(([k,v])=>`<button data-f="${k}" aria-pressed="${S.filtro===k}">${v}</button>`).join("")}</div>
+  ${gerente()&&lista.length?`<p class="dica">Arraste um pedido para a esquerda para editar, resetar ou excluir.</p>`:""}
   ${lista.length?lista.map(p=>{
     const tot=p.itens.reduce((s,i)=>s+i.qtd,0),sep=p.itens.reduce((s,i)=>s+Math.min(i.sep,i.qtd),0);
-    const quem=p.status==="separando"&&p.separador?` · ${esc(p.separador)}`:"";
-    return `<button class="order" data-id="${p.id}">
-      <div class="ticket"><small>PEDIDO</small>${p.id}</div>
+    const quem=p.status==="separando"&&p.separador?` · ${esc(p.separador)}`:p.status==="aguardando"&&p.responsavel?` · Resp.: ${esc(p.responsavel)}`:"";
+    const card=`<button class="order" data-id="${p.id}">
+      <div class="ticket s-${p.status}"><small>PEDIDO</small>${p.id}</div>
       <div class="cli">${esc(p.cliente)}</div>
       <div class="right"><span class="pill s-${p.status}">${STATUS[p.status]}</span><div class="bar" title="${sep}/${tot} separados"><i style="width:${tot?sep/tot*100:0}%"></i></div></div>
-      <div class="meta">${p.itens.length} itens · ${esc(p.cidade)} · <span class="${p.urgente?"urg":""}">Entrega ${esc(p.entrega)}</span>${quem}</div>
-    </button>`}).join(""):`<div class="empty">${S.pedidos.length?"Nenhum pedido neste filtro.":"Nenhum pedido ainda. Toque em “Nova lista para separar” para criar o primeiro."}</div>`}`;
+      <div class="meta">${p.itens.length} ${p.itens.length===1?"item":"itens"} · ${esc(p.cidade)} · <span class="${p.urgente?"urg":""}">Entrega ${esc(p.entrega)}</span>${quem}</div>
+    </button>`;
+    return gerente()?`<div class="swipe" data-id="${p.id}"><div class="sacts">
+      <button class="a-ed" data-sa="ed"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>Editar</button>
+      <button class="a-rs" data-sa="rs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>Resetar</button>
+      <button class="a-ex" data-sa="ex"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>Excluir</button>
+    </div>${card}</div>`:card}).join(""):`<div class="empty">${S.pedidos.length?"Nenhum pedido neste filtro.":"Nenhum pedido ainda. Toque em “Nova separação” para criar o primeiro."}</div>`}`;
   document.querySelectorAll("[data-f]").forEach(b=>b.onclick=()=>{S.filtro=b.dataset.f;LS.set("filtro",S.filtro);render()});
   document.querySelectorAll(".order").forEach(b=>b.onclick=()=>abrir(b.dataset.id));
-  footer(`<button class="btn tag" id="nova">+ Nova lista para separar</button>`);
-  $("#nova").onclick=()=>go("nova",null);
+  if(gerente())ligarArraste();
+  footer(`<button class="btn tag" id="nova">+ Nova separação</button>`);
+  $("#nova").onclick=()=>{go("nova",null);const n=S.operadores.length;atualizarOps().then(()=>{if(view.tela==="nova"&&S.operadores.length!==n&&!$("#app").contains(document.activeElement))render()})};
+}
+/* arrastar o cartão do pedido para revelar Editar · Resetar · Excluir */
+function ligarArraste(){
+  const W=234,fechar=w=>{w.classList.remove("open");w.querySelector(".order").style.transform=""};
+  const todos=[...document.querySelectorAll(".swipe")];
+  todos.forEach(w=>{
+    const c=w.querySelector(".order");let x0=null,y0=0,dx=0,base=0,arr=false,mexeu=false;
+    c.addEventListener("pointerdown",e=>{x0=e.clientX;y0=e.clientY;dx=0;arr=false;mexeu=false;base=w.classList.contains("open")?-W:0});
+    c.addEventListener("pointermove",e=>{
+      if(x0==null)return;dx=e.clientX-x0;const dy=e.clientY-y0;
+      if(!arr){if(Math.abs(dx)>8&&Math.abs(dx)>Math.abs(dy)){arr=true;w.classList.add("drag");todos.forEach(o=>o!==w&&fechar(o));try{c.setPointerCapture(e.pointerId)}catch(_){}}else if(Math.abs(dy)>10){x0=null;return}else return}
+      mexeu=true;c.style.transform=`translateX(${Math.max(-W,Math.min(0,base+dx))}px)`;
+    });
+    const solta=()=>{if(arr){w.classList.remove("drag");const ab=base+dx<-W/2;w.classList.toggle("open",ab);c.style.transform=ab?`translateX(${-W}px)`:""}x0=null;arr=false};
+    c.addEventListener("pointerup",solta);c.addEventListener("pointercancel",solta);
+    c.addEventListener("click",e=>{if(mexeu||w.classList.contains("open")){e.preventDefault();e.stopImmediatePropagation();if(!mexeu)fechar(w);mexeu=false}},true);
+    w.querySelectorAll("[data-sa]").forEach(b=>b.onclick=async()=>{
+      const p=S.pedidos.find(x=>x.id===w.dataset.id);if(!p)return;fechar(w);
+      if(b.dataset.sa==="ed")go("editar",p.id);
+      if(b.dataset.sa==="rs"&&await resetarPedido(p))render();
+      if(b.dataset.sa==="ex"&&await excluirPedido(p))render();
+    });
+  });
 }
 function abrir(id){
   const p=S.pedidos.find(x=>x.id===id);
@@ -444,7 +551,7 @@ function cabecalho(p,etapa){
       ${p.separador?`<div><div class="lbl">Separado por</div>${esc(p.separador)}</div>`:""}
       ${p.conferente?`<div><div class="lbl">Conferido por</div>${esc(p.conferente)}</div>`:""}
     </div>
-    ${gerente()?`<div><button class="linkbtn" id="excluir">Excluir pedido</button></div>`:""}
+    ${gerente()?`<div style="display:flex;gap:18px;flex-wrap:wrap"><button class="linkbtn plain" id="hEditar">Editar pedido</button><button class="linkbtn plain" id="hReset">Resetar</button><button class="linkbtn" id="excluir">Excluir pedido</button></div>`:""}
   </div>${delBox(p)}`;
 }
 const delBox=p=>view.del?`<div class="panel delbox" id="delBox" role="alert"><b>Excluir o pedido ${p.id} de ${esc(p.cliente)}?</b><p class="hint">Os itens, as contagens e o histórico serão apagados para todos. Não dá para desfazer.</p><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn ghost" id="delNao">Cancelar</button><button class="btn bad" id="delSim">Excluir pedido</button></div></div>`:"";
